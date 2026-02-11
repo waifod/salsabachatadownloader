@@ -1,0 +1,8 @@
+[project]
+name = "salsabachatadownloader"
+version = "0.1.0"
+description = "Download lesson videos from salsabachata.es"
+requires-python = ">=3.12"
+dependencies = [
+    "playwright>=1.58.0",
+]
