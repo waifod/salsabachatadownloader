@@ -65,4 +65,4 @@ Videos are loaded fully into memory before writing to disk. Based on 218 downloa
 4. Skips files that already exist locally
 5. Retries failed downloads with exponential backoff
 
-Output filenames follow the pattern: `{instructor}_{style}{level}_{date}_{lessonId}v{n}.mp4`
+Videos are organized into subdirectories by dance style: `{output}/{style}/{instructor}_{style}{level}_{date}_{lessonId}v{n}.mp4`
