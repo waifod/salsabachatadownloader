@@ -95,6 +95,7 @@ class JobContext:
     downloaded: int = 0
     skipped: int = 0
     failed: int = 0
+    total_bytes: int = 0
     errors: int = 0
     sum_videos: int = 0
     sum_elapsed: float = 0.0
@@ -120,25 +121,36 @@ class JobContext:
         if self.processed % 100 == 0:
             self.print_summary(f"{self.processed}/{self.total_lessons}")
 
+    def _fmt_bytes(self, n: int) -> str:
+        """Format byte count as human-readable string."""
+        if n < 1024 * 1024:
+            return f"{n / 1024:.0f} KB"
+        if n < 1024 * 1024 * 1024:
+            return f"{n / 1024 / 1024:.1f} MB"
+        return f"{n / 1024 / 1024 / 1024:.2f} GB"
+
     def print_summary(self, label: str = "Progress") -> None:
         """Print a summary of processing stats."""
         if self.processed == 0:
             return
-        avg_all = self.sum_elapsed / self.processed
+        avg = self.sum_elapsed / self.processed
         wall = time.monotonic() - self.t_start
+        range_str = (
+            f", range: {self.min_id}-{self.max_id}" if self.min_id else ""
+        )
         dist_str = ", ".join(
             f"{k}:{self.video_dist[k]}" for k in sorted(self.video_dist)
         )
-        range_str = (
-            f", first: {self.min_id}, last: {self.max_id}" if self.min_id else ""
-        )
         print(
             f"  [{label}] {self.processed} lessons,"
-            f" {self.sum_videos} video(s)"
-            f" [{dist_str}]{range_str}, {self.errors} errors,"
-            f" {wall:.1f}s wall, {avg_all:.1f}s avg/lesson,"
-            f" dl: {self.downloaded}, skip: {self.skipped},"
-            f" fail: {self.failed}"
+            f" {self.errors} errors,"
+            f" {wall:.1f}s wall, {avg:.1f}s avg{range_str}\n"
+            f"    {self.sum_videos} video(s),"
+            f" {self.downloaded} downloaded"
+            f" ({self._fmt_bytes(self.total_bytes)}),"
+            f" {self.skipped} skipped,"
+            f" {self.failed} failed,"
+            f" distribution: [{dist_str}]"
         )
 
 
@@ -210,6 +222,8 @@ async def process_lesson(
 
             for i, frame in enumerate(iframes):
                 src = await frame.get_attribute("src")
+                if not src:
+                    continue
                 video_id = urlparse(src).path.strip("/").split("/")[0]
                 download_link = f"{CF_DOWNLOAD_BASE}/{video_id}/downloads/default.mp4"
 
@@ -224,10 +238,12 @@ async def process_lesson(
                     job.skipped += 1
                     continue
 
-                if await download_video(
+                nbytes = await download_video(
                     page, download_link, filepath, filename, lesson_id
-                ):
+                )
+                if nbytes:
                     job.downloaded += 1
+                    job.total_bytes += nbytes
                 else:
                     job.failed += 1
 
@@ -250,17 +266,18 @@ async def download_video(
     filename: str,
     lesson_id: int,
     max_retries: int = 3,
-) -> bool:
-    """Helper function to download a single video file with retry logic."""
+) -> int:
+    """Download a single video file with retry logic. Returns bytes written, 0 on failure."""
     for attempt in range(max_retries):
         try:
             response = await page.request.get(url)
             if response.status == 200:
                 body = await response.body()
+                size = len(body)
                 with open(filepath, "wb") as f:
                     f.write(body)
-                print(f"[{lesson_id}]    {filename}: Saved.")
-                return True
+                print(f"[{lesson_id}]    {filename}: Saved ({size / 1024 / 1024:.1f} MB).")
+                return size
 
             if response.status >= 500:
                 # Server error, worth retrying
@@ -270,7 +287,7 @@ async def download_video(
             else:
                 # Client error (4xx), don't retry
                 print(f"[{lesson_id}]    {filename}: HTTP {response.status}")
-                return False
+                return 0
         except Exception as e:
             print(f"[{lesson_id}]    {filename}: Error: {e}")
             if os.path.exists(filepath):
@@ -284,7 +301,7 @@ async def download_video(
             await asyncio.sleep(delay)
 
     print(f"[{lesson_id}]    {filename}: Failed after {max_retries} attempts.")
-    return False
+    return 0
 
 
 async def login(page: Page, email: str, password: str) -> None:
