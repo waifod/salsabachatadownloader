@@ -4,5 +4,15 @@ version = "0.1.0"
 description = "Download lesson videos from salsabachata.es"
 requires-python = ">=3.12"
 dependencies = [
-    "playwright>=1.58.0",
+    "playwright>=1.62.0",
 ]
+
+[dependency-groups]
+# The bound is there because ruff changes which rules are on by default between 
+# minor versions, which silently changes what this file is expected to pass.
+dev = ["ruff>=0.16.4,<0.17"]
+
+[tool.ruff.lint.isort]
+# Keeps the aliased playwright imports ('Error as PlaywrightError') in the one
+# parenthesised block with the rest, instead of split into separate statements.
+combine-as-imports = true

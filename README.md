@@ -15,9 +15,25 @@ uv sync
 uv run playwright install firefox
 ```
 
+Linting and formatting use `ruff`, pinned in the `dev` dependency group:
+
+```sh
+uv run ruff format salsabachatadownloader.py
+uv run ruff check salsabachatadownloader.py
+```
+
+Run it through `uv run` rather than `uvx`, which floats to the latest release. Ruff's default rule set changes between versions, so a floating one reports different findings on unchanged code.
+
 ## Usage
 
-Credentials can be passed via flags or hardcoded in the script's `DEFAULT_EMAIL` and `DEFAULT_PASSWORD` constants.
+Credentials are read from `SALSABACHATA_EMAIL` and `SALSABACHATA_PASSWORD`:
+
+```sh
+export SALSABACHATA_EMAIL=you@example.com
+export SALSABACHATA_PASSWORD='...'
+```
+
+`-e` and `-p` override them, though a password passed that way is visible in your shell history and in the process list. The script exits if either is missing. Don't put credentials in the script: it is tracked by git.
 
 The script works from your [Mis clases](https://alumnos.salsabachata.es/mis-clases) listing. That listing is newest first and paginated: `/mis-clases` (equivalently `?page=1`) holds your most recent classes, `?page=2` the ones before those, and so on. With no arguments the script downloads every class with videos on that most recent page:
 
@@ -51,11 +67,11 @@ Classes are selected by date. The listing is the only place a class's month and 
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-e`, `--email` | | Login email |
-| `-p`, `--password` | | Login password |
+| `-e`, `--email` | `$SALSABACHATA_EMAIL` | Login email |
+| `-p`, `--password` | `$SALSABACHATA_PASSWORD` | Login password |
 | `-o`, `--output` | `salsabachata` | Output directory |
-| `-w`, `--workers` | `4` | Lesson pages scanned concurrently |
-| `-d`, `--download-workers` | `4` | Videos downloaded concurrently |
+| `-s`, `--scan-workers` | `4` | Lesson pages scanned at once, bound by browser memory |
+| `-d`, `--download-workers` | `4` | Videos downloaded at once, bound by the network |
 | `-n`, `--latest` | | Download the N most recent classes with videos |
 | `--all` | off | Download from every listing page, not just the most recent |
 | `--since` | | Only classes on or after `YYYY-MM-DD` |
@@ -71,7 +87,7 @@ For large batch downloads, consider running inside a `tmux` or `screen` session 
 The run has three steps. It scans the selected lesson pages through the browser and records what videos exist, then closes the browser and compares that against what's on disk, then downloads what's missing. The comparison is deliberately separate from the scan: what the site holds and what you already have are different questions, and only the first needs a browser.
 
 ```
-Indexed page 1 of 10: 41 classes with videos.
+Indexed page 1 of 10: 41 classes with videos, out of 50 listed.
 
 Scanning 41 lessons, 4 pages at a time
 [98252]  2026-08-18 19:00  Salsa Cubana 1         Ale                     Sol - Sala 1       1 video    2.15s
@@ -87,6 +103,7 @@ Downloading 4 videos, 4 at a time
 [1/4]  45.6 MB    1.58s   28.8 MB/s   school      bachata/tij_bachata1_260810t20_97952v1.mp4
 
   [Downloaded] 4 of 4, 104.8 MB in 1.78s, 59.0 MB/s aggregate
+    styles       [bachata:4]
     sources      [school:4]
 
 Done in 41.3s.
@@ -96,9 +113,15 @@ Scan lines read left to right as identity, then class metadata, then what the ru
 
 The split exists because response bodies fetched through Playwright travel over a single connection to its driver process, where they serialize against each other and against every page operation. Measured on a 2-vCPU VPS: 5.64 MB/s through that connection versus 1073 MB/s for a plain HTTP fetch of the same file, and four concurrent transfers finished in a staircase (7.0s, 12.2s, 18.9s, 25.2s) instead of together. A large download would stall unrelated page loads for minutes. Downloads therefore run outside Playwright, reusing the session cookies, which also means they stream to disk in chunks rather than buffering whole videos in memory.
 
-`-w` sets how many lesson pages are scanned at once and is bound by browser CPU and memory. `-d` sets how many videos download at once and is bound by the network. They're separate because scanning is usually the slower phase now.
+`-s` sets how many lesson pages are scanned at once and is bound by browser CPU and memory. `-d` sets how many videos download at once and is bound by the network. They stay separate rather than following one another because those two ceilings move independently: more RAM lets you scan wider without changing what the network will carry.
 
-Each download announces itself, then reports its size, duration, rate and which host served it, named rather than assumed so an unexpected one shows up as itself. Failures are listed again at the end so they aren't lost in the scroll, and a failed download makes the script exit non-zero.
+Neither applies to the listing crawl itself, which reads one page at a time. `--latest` and `--since` stop as soon as they have enough, and that decision needs the current page parsed before the next one is worth fetching.
+
+The listing line reports both counts, `41 classes with videos, out of 50 listed`, because the difference is expected: classes whose recordings have already been removed still appear in the listing without a video link.
+
+Each download reports, on completion, its size, duration, rate and which host served it, named rather than assumed so an unexpected one shows up as itself. The closing `styles` line counts what actually landed, not what was planned, so on a partly failed run it reads lower than the plan's `to download`. Failures are listed again at the end so they aren't lost in the scroll, and a failed download makes the script exit non-zero. A lesson page that couldn't be scanned counts the same way, since it means a video that won't be downloaded.
+
+The script also stops with an error, rather than reporting nothing to do, when the site stops looking the way it expects: a listing page that won't load, `?page=N` being ignored so every page serves the same classes, or listing rows that no longer yield any video links. Each of those otherwise looks identical to having already downloaded everything, which is the wrong thing to be quiet about.
 
 Files are written to a `.part` file and renamed on completion, so an interrupted run never leaves a truncated file that a later run mistakes for finished. Style directories are created only when a video is about to be written into one.
 
@@ -118,6 +141,8 @@ salsabachata/bachata/tij_bachata2_260810t21_97950v1.mp4
 ```
 
 `{instructor}` is the first three letters of each name in the credit, so "Nico y Estefi" becomes `nicest`. Accented letters fold to their base letter, so "Salsa en Línea" gives a `salsaenlinea` directory and "Forró" gives `forro`.
+
+`v{n}` is the number the page gives the video in its own `Vídeo 2 de 3` label, not its position in what the scan happened to find. Those agree on a normal page, and the distinction matters when they don't: if one video's card stops yielding a URL, everything after it shifts up a position, which renames files already on disk and makes the last video look as though it were downloaded, so it never is. Where the labels are missing or repeat, position is used instead, since two videos sharing a number would be worse.
 
 Already-downloaded videos are recognised by name and skipped, so the scheme is worth keeping stable. If you change it, existing files are re-downloaded under the new names and the old ones are left behind.
 
