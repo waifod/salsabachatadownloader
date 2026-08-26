@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Saved pages used as scraping fixtures (contain personal data)
+*.html
+
+# Downloaded videos
+salsabachata/
